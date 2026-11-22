@@ -544,7 +544,9 @@ static int do_manage_mark(void __user *arg)
 
 static int do_get_hook_mode(void __user *arg)
 {
-	struct ksu_get_hook_mode_cmd cmd = {0};
+	struct ksu_get_hook_mode_cmd cmd = {
+  		.mode = { 0 },
+};
 	const char *type = "Kprobes";
 
 #ifndef KSU_KPROBES_HOOK
@@ -567,7 +569,9 @@ static int do_get_hook_mode(void __user *arg)
 
 static int do_get_version_tag(void __user *arg)
 {
-	struct ksu_get_version_tag_cmd cmd = {0};
+	struct ksu_get_version_tag_cmd cmd = {
+  		.tag = { 0 },
+};
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
 	strscpy(cmd.tag, KERNEL_SU_VERSION_TAG, sizeof(cmd.tag));
@@ -597,7 +601,9 @@ static int do_nuke_ext4_sysfs(void __user *arg)
 
     memset(mnt, 0, sizeof(mnt));
 
-    ret = strncpy_from_user(mnt, cmd.arg, sizeof(mnt));
+    ret = strncpy_from_user(mnt,
+                        (const char __user *)(uintptr_t)cmd.arg,
+			sizeof(mnt));
     if (ret < 0) {
         pr_err("nuke ext4 copy mnt failed: %ld\\n", ret);
         return -EFAULT;   // 或者 return ret;

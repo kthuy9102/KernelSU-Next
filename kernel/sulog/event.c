@@ -152,7 +152,7 @@ static struct user_arg_ptr ksu_sulog_user_argv(const char __user *const __user *
     struct user_arg_ptr argv;
 
 #ifdef CONFIG_COMPAT
-    if (unlikely(in_compat_syscall())) {
+    if (unlikely(is_compat_task())) {
         argv.is_compat = true;
         argv.ptr.compat = (const compat_uptr_t __user *)argv_user;
         return argv;

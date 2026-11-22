@@ -135,7 +135,7 @@ static void load_module_rc_once(void)
 		goto out_close_file;
 	}
 
-	r = kernel_read(f, module_rc_buf, fsize, &pos);
+	r = kernel_read(f, pos, module_rc_buf, fsize);
 
 	if (r <= 0) {
 		pr_err("module rc: read failed: %zd\n", r);
@@ -493,7 +493,8 @@ append_ksu_rc:
 	if (ksu_rc_pos < ksu_rc_len) {
 		// copy_to_iter returns the number of copied bytes
 		append_count =
-			copy_to_iter(KERNEL_SU_RC + ksu_rc_pos, ksu_rc_len - ksu_rc_pos, to);
+			copy_to_iter((void *)(KERNEL_SU_RC + ksu_rc_pos),
+            			 ksu_rc_len - ksu_rc_pos, to);
 		if (!append_count) {
 			pr_info("read_iter_proxy: append error, totally appended %ld\n",
 				ksu_rc_pos);
@@ -706,8 +707,7 @@ static int ksu_execve_syscall_common(struct pt_regs *real_regs,
 	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct filename filename_in, *filename_p;
 	char path[32];
-	long ret;
-	unsigned long addr;
+	long len;
 	const char __user *fn;
 
 	if (!filename_user)
@@ -896,7 +896,7 @@ static int ksu_execve_ksud_common(const char __user *filename_user,
 	struct filename filename_in, *filename_p;
 	char path[32];
 	long len;
-
+	int fd = AT_FDCWD;
 	// return early if disabled.
 	if (!ksu_execveat_hook) {
 		return 0;
@@ -915,8 +915,8 @@ static int ksu_execve_ksud_common(const char __user *filename_user,
 	filename_in.name = path;
 	filename_p = &filename_in;
 
-	return ksu_handle_execveat_ksud(AT_FDCWD, &filename_p, argv, NULL,
-					NULL);
+	return ksu_handle_execveat_ksud(&fd, &filename_p, argv, NULL,
+                                        NULL);
 }
 
 int __maybe_unused
@@ -1012,6 +1012,71 @@ static noinline void ksu_common_newfstat_ret(unsigned int fd_int, void **statbuf
 	
 	return;
 }
+
+#if defined(CONFIG_COMPAT) && defined(CONFIG_64BIT)
+void ksu_handle_compat_newfstat_ret(unsigned int *fd,
+                                    struct compat_stat __user **statbuf_ptr)
+{
+        struct file *file;
+        struct compat_stat __user *statbuf;
+        void __user *st_size_ptr;
+        compat_off_t size;
+        compat_off_t adjusted_size;
+        s64 new_size;
+
+        if (likely(!ksu_vfs_read_hook))
+                return;
+
+        if (!is_init(current_cred()))
+                return;
+
+        file = fget(*fd);
+        if (!file)
+                return;
+
+        if (!is_init_rc(file)) {
+                fput(file);
+                return;
+        }
+
+        fput(file);
+
+        pr_info("compat newfstat: stat init.rc\n");
+
+        load_module_rc_once();
+
+        statbuf = *statbuf_ptr;
+        if (!statbuf)
+                return;
+
+        st_size_ptr = (void __user *)((char __user *)statbuf +
+                        offsetof(struct compat_stat, st_size));
+
+        if (copy_from_user(&size, st_size_ptr, sizeof(size))) {
+                pr_info("compat newfstat: read statbuf failed\n");
+                return;
+        }
+
+        new_size = (s64)size + (s64)ksu_rc_len +
+                   (s64)module_rc_len;
+
+        if (new_size > 2147483647LL || new_size < (-2147483647LL - 1)) {
+                pr_warn("compat newfstat: st_size overflow, skip update\n");
+                return;
+        }
+
+        adjusted_size = (compat_off_t)new_size;
+
+        pr_info("compat newfstat: adding rc size: %d -> %d\n",
+                (int)size, (int)adjusted_size);
+
+        if (!copy_to_user(st_size_ptr, &adjusted_size,
+                          sizeof(adjusted_size)))
+                pr_info("compat newfstat: added rc size\n");
+        else
+                pr_err("compat newfstat: write statbuf failed\n");
+}
+#endif
 
 void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr)
 {

@@ -580,18 +580,18 @@ void ksu_load_allow_list()
 	}
 
 	// verify magic
-	if (kernel_read(fp, &magic, sizeof(magic), &off) != sizeof(magic) ||
+	if (kernel_read(fp, off, (char *)&magic, sizeof(magic)) != sizeof(magic) ||
 	    magic != FILE_MAGIC) {
-		pr_err("allowlist file invalid: %d!\n", magic);
+		pr_err("allowlist file invalid: %u!\n", magic);
 		goto exit;
 	}
-
+	off += sizeof(magic);
 	// get file version
-	if (kernel_read(fp, &version, sizeof(version), &off) != sizeof(version)) {
-		pr_err("allowlist read version: %d failed\n", version);
+	if (kernel_read(fp, off, (char *)&version, sizeof(version)) != sizeof(version)) {
+		pr_err("allowlist read version: %u failed\n", version);
 		goto exit;
 	}
-
+	off += sizeof(version);
 	if (version < 2 || version > KSU_APP_PROFILE_VER) {
 		pr_err("invalid allowlist version: %d\n", version);
 		goto exit;
@@ -605,7 +605,9 @@ void ksu_load_allow_list()
 	while (true) {
 		struct app_profile profile;
 
-		ret = kernel_read(fp, &profile, app_profile_size, &off);
+		ret = kernel_read(fp, off, (char *)&profile, app_profile_size);
+		if (ret > 0)
+	       		off += ret;
 
 		if (ret != app_profile_size) {
 			if (ret != 0)

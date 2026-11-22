@@ -12,6 +12,7 @@
 #include <linux/sched.h>
 #include <linux/proc_fs.h>
 #include <linux/kthread.h>
+#include <linux/string.h>
 
 #include "policy/feature.h"
 #include "ksu.h"
@@ -290,8 +291,7 @@ static struct file_operations *g_sel_context_fops;
 static __nocfi ssize_t ksu_sel_write(struct file *file, const char __user *ubuf, size_t size, loff_t *pos)
 {
     ino_t ino;
-    char kbuf[256];
-    size_t len;
+    char *kbuf;
     ssize_t ret;
 
     if (unlikely(!ksu_selinux_hide_enabled))
@@ -303,22 +303,40 @@ static __nocfi ssize_t ksu_sel_write(struct file *file, const char __user *ubuf,
     if (ino != KSU_SEL_CONTEXT_INO && ino != KSU_SEL_ACCESS_INO)
         goto passthrough;
 
-    len = size < sizeof(kbuf) - 1 ? size : sizeof(kbuf) - 1;
-    if (copy_from_user(kbuf, ubuf, len))
+    if (size > SIMPLE_TRANSACTION_LIMIT - 1)
         goto passthrough;
-    kbuf[len] = 0;
+
+    kbuf = kmalloc(size + 1, GFP_KERNEL);
+    if (!kbuf)
+        return -ENOMEM;
+
+    if (copy_from_user(kbuf, ubuf, size)) {
+        kfree(kbuf);
+        return -EFAULT;
+    }
+    kbuf[size] = '\0';
+
+    if (memchr(kbuf, '\0', size)) {
+        kfree(kbuf);
+        return -EINVAL;
+    }
 
     if (ino == KSU_SEL_CONTEXT_INO) {
         if (ksu_should_hide_context(kbuf)) {
             pr_info_ratelimited("selinux_hide: blocked context: %.40s\n", kbuf);
+            kfree(kbuf);
             return -EINVAL;
         }
+
+        kfree(kbuf);
         goto passthrough;
     }
 
     ret = orig_sel_write(file, ubuf, size, pos);
-    if (ret <= 0)
+    if (ret <= 0) {
+        kfree(kbuf);
         return ret;
+    }
 
     {
         bool deny = false;
@@ -335,6 +353,7 @@ static __nocfi ssize_t ksu_sel_write(struct file *file, const char __user *ubuf,
         ksu_fix_access_response(file->private_data, deny);
     }
 
+    kfree(kbuf);
     return ret;
 
 passthrough:
@@ -346,8 +365,8 @@ static struct file_operations *g_proc_attr_fops;
 
 static __nocfi ssize_t ksu_proc_pid_attr_write(struct file *file, const char __user *ubuf, size_t size, loff_t *pos)
 {
-    char kbuf[128];
-    size_t len;
+    char *kbuf;
+    size_t check_size;
     const char *attr_name;
 
     if (unlikely(!ksu_selinux_hide_enabled))
@@ -359,15 +378,35 @@ static __nocfi ssize_t ksu_proc_pid_attr_write(struct file *file, const char __u
     if (!attr_name || strcmp(attr_name, "current"))
         goto passthrough;
 
-    len = size < sizeof(kbuf) - 1 ? size : sizeof(kbuf) - 1;
-    if (copy_from_user(kbuf, ubuf, len))
-        goto passthrough;
-    kbuf[len] = '\0';
+    /*
+     * proc_pid_attr_write() limits input to PAGE_SIZE.
+     * Inspect the same amount of data as the original handler.
+     */
+    check_size = size < PAGE_SIZE ? size : PAGE_SIZE;
+
+    kbuf = kmalloc(check_size + 1, GFP_KERNEL);
+    if (!kbuf)
+        return -ENOMEM;
+
+    if (copy_from_user(kbuf, ubuf, check_size)) {
+        kfree(kbuf);
+        return -EFAULT;
+    }
+
+    kbuf[check_size] = '\0';
+
+    if (memchr(kbuf, '\0', check_size)) {
+        kfree(kbuf);
+        return -EINVAL;
+    }
 
     if (ksu_should_hide_context(kbuf)) {
         pr_info_ratelimited("selinux_hide: attr/current blocked: %.40s\n", kbuf);
+        kfree(kbuf);
         return -EINVAL;
     }
+
+    kfree(kbuf);
 
 passthrough:
     return orig_proc_pid_attr_write(file, ubuf, size, pos);
